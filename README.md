@@ -2,7 +2,12 @@
 
 从 [Polymarket](https://polymarket.com) 采集体育类预测事件的 **Full Order Book（完整订单簿）** 和 **Realized Data（已实现数据）**。
 
-支持 145 种体育/电竞赛事（NBA、NFL、EPL、UFC、CS2 等），纯 Python 实现，**无需 API Key**。
+支持 145 种体育/电竞赛事（NBA、NFL、EPL、UFC、CS2 等），纯 Python 实现，**无需 API Key**（链上实时模式需 Polygon RPC）。
+
+**核心能力：**
+- **批量拉取**：Data API 历史成交，覆盖 ~97%
+- **链上实时监听**：Polygon OrderFilled 事件，覆盖 100%，毫秒级时间戳
+- **本地 WebSocket 推送**：实时交易事件广播，可对接下游系统
 
 ---
 
@@ -12,6 +17,7 @@
 - [项目能力总结](#项目能力总结)
 - [快速开始](#快速开始)
 - [使用方式](#使用方式)
+- [实时链上监听（stream-trades）](#实时链上监听stream-trades)
 - [数据结构与字段说明](#数据结构与字段说明)
 - [技术架构](#技术架构)
 - [API 限制与应对策略](#api-限制与应对策略)
@@ -87,18 +93,22 @@ Realized Data 由两部分构成：
 
 ```
 示例成交记录:
-┌─────────────────┬────────────────────────────────────────┐
-│ 字段             │ 值                                      │
-├─────────────────┼────────────────────────────────────────┤
-│ side            │ BUY                                     │
-│ outcome         │ Lakers                                  │
-│ price           │ 0.55                                    │
-│ size            │ 100.00 USDC                             │
-│ timestamp       │ 2026-02-24 08:30:00 UTC                 │
-│ transaction_hash│ 0x3c240944c4c1a49c0c11c4ce99...         │
-│ proxy_wallet    │ 0xe7f7e2d3d4d0e164239f3cc30a...         │
-└─────────────────┴────────────────────────────────────────┘
+┌──────────────────┬────────────────────────────────────────┐
+│ 字段              │ 值                                      │
+├──────────────────┼────────────────────────────────────────┤
+│ side             │ BUY                                     │
+│ outcome          │ Lakers                                  │
+│ price            │ 0.55                                    │
+│ size             │ 100.00 USDC                             │
+│ timestamp        │ 2026-02-24 08:30:00 UTC                 │
+│ timestamp_ms     │ 1771929600635                            │
+│ trade_time_ms    │ 2026-02-24 08:30:00.635 UTC             │
+│ transaction_hash │ 0x3c240944c4c1a49c0c11c4ce99...         │
+│ proxy_wallet     │ 0xe7f7e2d3d4d0e164239f3cc30a...         │
+└──────────────────┴────────────────────────────────────────┘
 ```
+
+> `timestamp_ms` 和 `trade_time_ms` 仅在链上实时监听模式下有值。Data API 批量拉取的数据该字段为 NULL/空。
 
 **字段含义：**
 
@@ -132,14 +142,24 @@ Realized Data 由两部分构成：
 
 | 方式 | 端点 | 覆盖率 | 说明 |
 |------|------|--------|------|
-| Data API | `GET https://data-api.polymarket.com/trades` | ~97% | 纯 API，无需认证，使用 BUY+SELL 分拆策略 |
-| 链上回放 | Polygon CTF Exchange 的 `OrderFilled` 事件 | 100% | 需要 RPC 节点，适合严格审计 |
+| Data API 批量拉取 | `GET https://data-api.polymarket.com/trades` | ~97% | 纯 API，无需认证，BUY+SELL 分拆策略 |
+| **链上实时监听** | **Polygon CTF Exchange `OrderFilled` 事件** | **100%** | **WebSocket RPC 订阅新区块，毫秒级时间戳** |
 | Subgraph | Goldsky GraphQL | 100% | 索引后的链上数据，GraphQL 查询 |
 | Sports WS | `wss://sports-api.polymarket.com/ws` | 实时 | 实时比分推送 |
 
-**为什么 API 路径覆盖率是 ~97% 而不是 100%？**
+**两种 Trades 获取模式对比：**
 
-Polymarket Data API 的 `/trades` 端点有分页限制：`offset + limit` 不能超过 4000。对于高交易量的市场，普通分页最多获取 4000 条。本项目使用 BUY + SELL 分拆策略：分别查询 BUY 方向和 SELL 方向的交易（各最多 4000 条），合并去重后可覆盖约 97%。剩余 3% 是因为某个方向的交易数也超过了 4000 条。
+| 维度 | 批量拉取 (`trades`) | 实时监听 (`stream-trades`) |
+|------|---------------------|---------------------------|
+| 数据来源 | Data API | Polygon 链上 OrderFilled 事件 |
+| 覆盖率 | ~97% (受 offset 上限限制) | 100% (直接读链) |
+| 时间精度 | 秒级 (API 原生限制) | 毫秒级 (`block_ts × 1000 + log_index`) |
+| 适用场景 | 历史回补、批量分析 | 实时交易监控、低延迟信号 |
+| 额外能力 | — | 本地 WebSocket 推送、`server_received_ms` |
+
+**为什么 Data API 覆盖率是 ~97%？**
+
+Data API 的 `/trades` 端点有分页限制：`offset + limit` 不能超过 4000。本项目使用 BUY+SELL 分拆策略覆盖约 97%。**如需 100% 覆盖，使用 `stream-trades` 链上实时监听模式。**
 
 ---
 
@@ -163,12 +183,15 @@ Polymarket Data API 的 `/trades` 端点有分页限制：`offset + limit` 不�
 | 发现所有体育赛事事件 | ✅ | 通过 Gamma API 的 `/sports` + `/events`，覆盖 145 种运动 |
 | 解析每个事件下所有盘口 | ✅ | moneyline、spreads、totals、player props 等全部盘口类型 |
 | 获取 Full Order Book | ✅ | REST 快照（批量）+ WebSocket 实时流 |
-| 获取 Realized Trades | ✅ | Data API + BUY/SELL 分拆策略，覆盖 ~97% |
+| 批量拉取 Realized Trades | ✅ | Data API + BUY/SELL 分拆策略，覆盖 ~97% |
+| **链上实时监听 Trades** | ✅ | **Polygon OrderFilled 事件，100% 覆盖，毫秒级时间戳** |
+| **本地 WebSocket 推送** | ✅ | **实时交易事件广播至 `ws://localhost:8765`** |
+| **毫秒级时间戳** | ✅ | **`timestamp_ms = block_ts × 1000 + log_index`** |
 | 获取比赛结果 | ✅ | 从 event 数据提取 + Sports WebSocket 实时比分 |
 | 按运动类型过滤 | ✅ | `--sport nba,nfl` 支持任意组合 |
 | 断点续传 | ✅ | 所有长时间任务支持中断后恢复 |
-| 数据导出 | ✅ | CSV 和 JSON 格式 |
-| 链上 100% 覆盖 | 🔧 | 架构已支持，需扩展 Subgraph 查询 |
+| 数据导出 | ✅ | CSV 和 JSON 格式，含 `timestamp_ms` 和 `trade_time_ms` 列 |
+| 断线自动重连 | ✅ | 链上监听指数退避重连（1s→2s→4s→...→60s） |
 
 ---
 
@@ -200,6 +223,18 @@ python main.py all --sport nba --active-only
 3. 获取所有活跃市场的 Full Order Book 快照
 4. 获取所有市场的历史成交记录
 5. 提取比赛结果并导出 CSV
+
+### 实时监听 NBA 链上成交
+
+```bash
+python main.py stream-trades --sport nba --rpc-url wss://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+```
+
+启动后持续运行：
+1. 回补最近 100 个区块的历史数据
+2. 实时订阅新区块，解析 OrderFilled 事件
+3. 匹配体育交易，写入 SQLite（与批量数据共表）
+4. 通过 `ws://localhost:8765` 推送 JSON 格式交易事件
 
 ### 生成样本数据到桌面
 
@@ -257,6 +292,149 @@ python main.py trades --no-resume               # 不使用断点续传，从头
 ```
 
 注意：成交记录采集耗时较长（每个市场需要多次 API 请求）。支持断点续传，可以随时中断后再继续。
+
+---
+
+## 实时链上监听（stream-trades）
+
+通过 Polygon WebSocket RPC 订阅新区块，实时解析 CTF Exchange 和 NegRisk CTF Exchange 合约的 `OrderFilled` 事件。
+
+### 基本用法
+
+```bash
+# 监听所有体育赛事
+python main.py stream-trades --rpc-url wss://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+
+# 只监听 NBA
+python main.py stream-trades --sport nba --rpc-url wss://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+
+# 自定义推送端口和回补深度
+python main.py stream-trades --rpc-url wss://... --ws-port 9000 --backfill 500
+```
+
+### 参数说明
+
+| 参数 | 必填 | 默认值 | 说明 |
+|------|------|--------|------|
+| `--rpc-url` | 是 | — | Polygon WebSocket RPC URL |
+| `--sport` | 否 | 全部体育 | 运动类型过滤 |
+| `--ws-port` | 否 | 8765 | 本地 WebSocket 推送端口 |
+| `--backfill` | 否 | 100 | 启动时回补的区块数 |
+
+### 工作流程
+
+```
+启动
+  │
+  ├── 1. 从数据库构建 token_id → (condition_id, event_slug, outcome) 映射
+  │
+  ├── 2. 连接 Polygon WebSocket RPC
+  │
+  ├── 3. 回补最近 N 个区块的 OrderFilled 事件
+  │       eth_getLogs → 解析 → 写入 SQLite
+  │
+  ├── 4. eth_subscribe("newHeads") 订阅新区块
+  │       每个新区块到达时:
+  │       ├── eth_getLogs 获取该区块的 OrderFilled 事件
+  │       ├── 解析事件 → 过滤匹配的体育 token
+  │       ├── 写入 SQLite (与 Data API 数据共表)
+  │       └── 通过本地 WebSocket 推送 JSON
+  │
+  └── 5. 断线自动重连 (指数退避: 1s→2s→4s→...→60s)
+```
+
+### 链上合约
+
+| 合约 | 地址 | 说明 |
+|------|------|------|
+| CTF Exchange | `0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e` | 标准条件 Token 交易 |
+| NegRisk CTF Exchange | `0xc5d563a36ae78145c45a50134d48a1215220f80a` | 负风险条件 Token 交易 |
+| OrderFilled 事件签名 | `0xd0a08e8c493f9c...` | 每笔撮合成交触发 |
+
+### OrderFilled 事件解析
+
+```
+OrderFilled(
+    bytes32 indexed orderHash,     ← 订单哈希
+    address indexed maker,         ← 挂单方
+    address indexed taker,         ← 吃单方
+    uint256 makerAssetId,          ← 挂单方资产 ID (0=USDC, 非0=outcome token)
+    uint256 takerAssetId,          ← 吃单方资产 ID
+    uint256 makerAmountFilled,     ← 挂单方成交量 (6 位小数)
+    uint256 takerAmountFilled,     ← 吃单方成交量
+    uint256 fee                    ← 手续费
+)
+
+判断方向:
+  makerAssetId == 0 → BUY  (挂单方提供 USDC, 买入 outcome token)
+  takerAssetId == 0 → SELL (挂单方提供 token, 卖出换 USDC)
+
+价格计算:
+  price = usdc_amount / token_amount
+```
+
+### 本地 WebSocket 推送
+
+启动后在 `ws://localhost:8765` 广播 JSON 格式的实时交易事件：
+
+```json
+{
+  "event_slug": "nba-bos-phx-2026-02-24",
+  "condition_id": "0xd97ee697...",
+  "trade_timestamp": 1771929646,
+  "side": "BUY",
+  "outcome": "Suns",
+  "size": 8.867924,
+  "price": 0.47,
+  "proxy_wallet": "0xe05d8288...",
+  "transaction_hash": "0x2aab5d56...",
+  "timestamp_ms": 1771929647635,
+  "server_received_ms": 1771930210882
+}
+```
+
+可用 Python 快速接收：
+
+```python
+import asyncio, websockets, json
+
+async def listen():
+    async with websockets.connect("ws://localhost:8765") as ws:
+        async for msg in ws:
+            trade = json.loads(msg)
+            print(f"{trade['side']} {trade['outcome']} ${trade['size']:.2f} @ {trade['price']}")
+
+asyncio.run(listen())
+```
+
+### 毫秒级时间戳
+
+链上实时监听模式为每笔交易生成两个高精度时间戳：
+
+| 字段 | 计算方式 | 说明 |
+|------|----------|------|
+| `timestamp_ms` | `block_timestamp × 1000 + log_index` | 区块内单调递增的伪毫秒戳 |
+| `server_received_ms` | `int(time.time() * 1000)` | 服务器收到区块的本地时间（仅实时模式） |
+
+**`timestamp_ms` 示例：**
+
+```
+block_timestamp = 1771929646  (2026-02-24 10:40:46 UTC)
+log_index       = 635         (该区块内第 636 条事件)
+timestamp_ms    = 1771929647635
+trade_time_ms   = "2026-02-24 10:40:47.635 UTC"
+```
+
+同一区块内的不同交易通过 `log_index` 保证顺序：
+```
+trade 1: timestamp_ms = 1771929647635  (log_index=635)
+trade 2: timestamp_ms = 1771929647637  (log_index=637)
+trade 3: timestamp_ms = 1771929648216  (log_index=1216)
+```
+
+**CSV 导出时**，末尾追加两列：`timestamp_ms` 和 `trade_time_ms`（可读格式），原有列顺序不变。Data API 拉取的数据两列为空。
+
+---
 
 ### 获取比赛结果
 
@@ -353,9 +531,27 @@ Sport (运动)                    ← /sports 端点获取
 | `events` | 事件（一场比赛或一个赛季问题） | NBA 2026 Champion |
 | `markets` | 市场（事件下的具体盘口） | "Will Lakers win?" |
 | `orderbook_snapshots` | 订单簿快照 | bids/asks + 深度统计 |
-| `trades` | 成交记录 | 每笔买卖的价格/数量/时间 |
+| `trades` | 成交记录 (Data API + 链上) | 每笔买卖的价格/数量/时间/毫秒戳 |
 | `game_results` | 比赛结果 | 最终比分 + 获胜方 |
 | `fetch_progress` | 采集进度（断点续传用） | |
+
+**trades 表字段：**
+
+| 字段 | 类型 | 说明 | 来源 |
+|------|------|------|------|
+| `id` | INTEGER | 自增主键 | 自动 |
+| `event_slug` | TEXT | 事件标识 | 两者 |
+| `condition_id` | TEXT | 市场条件 ID | 两者 |
+| `trade_timestamp` | INTEGER | 秒级时间戳 (Unix) | 两者 |
+| `side` | TEXT | BUY / SELL | 两者 |
+| `outcome` | TEXT | 预测结果标签 | 两者 |
+| `size` | REAL | 成交金额 (USDC) | 两者 |
+| `price` | REAL | 成交价格 (0~1) | 两者 |
+| `proxy_wallet` | TEXT | 交易者钱包地址 | 两者 |
+| `transaction_hash` | TEXT | Polygon 链上交易哈希 | 两者 |
+| `fetched_at` | TEXT | 数据入库时间 | 两者 |
+| `timestamp_ms` | INTEGER | 毫秒级时间戳 (`block_ts*1000+log_index`) | 仅链上 |
+| `server_received_ms` | INTEGER | 服务器收到区块的本地时间 | 仅实时 |
 
 ---
 
@@ -390,6 +586,12 @@ Sport (运动)                    ← /sports 端点获取
 │  ├── wss://.../ws/market  → 实时订单簿更新              │
 │  └── wss://sports-api.polymarket.com/ws → 实时比分     │
 │                                                       │
+│  Polygon 链上 (stream-trades 模式)                     │
+│  ├── eth_subscribe("newHeads") → 新区块通知            │
+│  ├── eth_getLogs → OrderFilled 事件查询                │
+│  ├── CTF Exchange        → 0x4bfb41d5...              │
+│  └── NegRisk CTF Exchange → 0xc5d563a3...             │
+│                                                       │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -397,13 +599,13 @@ Sport (运动)                    ← /sports 端点获取
 
 ```
 polymarket-sports-data/
-├── main.py                    # CLI 主入口（8 个子命令）
-├── config.py                  # API 端点、速率控制参数
+├── main.py                    # CLI 主入口（9 个子命令）
+├── config.py                  # API 端点、速率控制、链上合约地址
 ├── generate_sample.py         # 样本数据生成脚本
-├── requirements.txt           # 依赖：requests, websocket-client, tqdm
+├── requirements.txt           # 依赖：requests, websocket-client, websockets, tqdm
 ├── src/
 │   ├── api_client.py          # HTTP 客户端（重试 + 指数退避 + 限流）
-│   ├── database.py            # SQLite 存储层（7 张表）
+│   ├── database.py            # SQLite 存储层（7 张表，含 schema 迁移）
 │   ├── models.py              # 数据模型定义
 │   ├── discovery/             # 事件发现模块
 │   │   ├── sports_meta.py     # 获取 145 种运动的元数据和 tag 映射
@@ -413,10 +615,11 @@ polymarket-sports-data/
 │   │   ├── rest_fetcher.py    # REST 批量快照（POST /books）
 │   │   └── ws_streamer.py     # WebSocket 实时流 + 自动持久化
 │   ├── realized/              # 已实现数据模块
-│   │   ├── trades_fetcher.py  # 成交记录采集 + BUY/SELL 分拆去重
+│   │   ├── trades_fetcher.py  # 成交记录批量采集 + BUY/SELL 分拆去重
+│   │   ├── chain_streamer.py  # 链上实时监听 + 本地 WS 推送 (NEW)
 │   │   └── results_fetcher.py # 比赛结果提取 + 实时比分 WebSocket
 │   └── export/
-│       └── exporter.py        # CSV / JSON 导出
+│       └── exporter.py        # CSV / JSON 导出（含 timestamp_ms 列）
 └── data/                      # 运行时自动创建
     ├── polymarket_sports.db   # SQLite 数据库
     └── *.csv / *.json         # 导出文件
@@ -432,15 +635,20 @@ Step 2: 事件发现
   GET /events?tag_id=745 → NBA 事件列表
   解析 event.markets[] → conditionId + clobTokenIds
                 ↓
-          ┌─────┴─────┐
-          ↓           ↓
-Step 3: Order Book  Step 4: Trades
-  POST /books         GET /trades?market=conditionId
-  token_id →          BUY + SELL 分拆策略
-  bids[] + asks[]     合并去重
-          ↓           ↓
-          └─────┬─────┘
-                ↓
+    ┌──────────┼──────────┐
+    ↓          ↓          ↓
+Step 3:      Step 4a:   Step 4b:
+Order Book   Trades     stream-trades (链上实时)
+POST /books  Data API   eth_subscribe("newHeads")
+token_id →   BUY+SELL   每区块 eth_getLogs
+bids+asks    分拆去重    → OrderFilled 解析
+    ↓          ↓        → timestamp_ms
+    │          │        → WS 推送 localhost:8765
+    │          ↓          ↓
+    │     ┌────┴──────────┘
+    │     ↓                  两种来源共用
+    │   trades 表 ←──────── 同一张 SQLite 表
+    ↓     ↓
 Step 5: 结果提取 + 导出 CSV/JSON
 ```
 
@@ -450,11 +658,12 @@ Step 5: 结果提取 + 导出 CSV/JSON
 
 | 限制 | 详情 | 应对策略 |
 |------|------|----------|
-| Data API offset 上限 | `offset + limit >= 4000` 返回 400 | BUY + SELL 分拆策略，覆盖 ~97% |
+| Data API offset 上限 | `offset + limit >= 4000` 返回 400 | BUY + SELL 分拆策略覆盖 ~97%；或用 `stream-trades` 覆盖 100% |
 | API 限流 (429) | 请求过快会被拒绝 | 请求间隔 0.35s + 指数退避重试 |
 | Gamma API 分页 | 每页最多 100 条 | 自动分页 + offset 递增 |
 | Data API 每页上限 | 每次最多 1000 条 | 固定 limit=1000 |
 | WebSocket 心跳 | Sports WS 需 pong 回应 | 自动处理 ping/pong |
+| RPC 连接断开 | 网络波动或节点维护 | 指数退避自动重连 (1s→2s→4s→...→60s) |
 
 ### 速率控制参数（可在 config.py 中调整）
 
@@ -463,6 +672,13 @@ REQUEST_DELAY = 0.35      # 请求间隔（秒）
 MAX_RETRIES = 5           # 最大重试次数
 RETRY_BACKOFF = 0.8       # 指数退避因子
 BOOKS_BATCH_SIZE = 100    # 每批 order book 查询数量
+
+# 链上监听参数
+CTF_EXCHANGE = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
+NEG_RISK_CTF_EXCHANGE = "0xc5d563a36ae78145c45a50134d48a1215220f80a"
+ORDER_FILLED_TOPIC = "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
+CHAIN_WS_PORT = 8765      # 本地 WebSocket 推送端口
+CHAIN_BACKFILL_BLOCKS = 100  # 启动时回补的区块数
 ```
 
 ---
@@ -476,11 +692,39 @@ BOOKS_BATCH_SIZE = 100    # 每批 order book 查询数量
 - **成交记录**：数小时到数天（取决于市场数量和交易活跃度）
 - 支持断点续传，可以分多次运行
 
-### Q: 为什么 Realized Data 覆盖率不是 100%？
+### Q: 为什么 Data API 覆盖率不是 100%？
 
-Data API 的 offset 上限是硬限制。BUY+SELL 分拆策略可覆盖约 97%。如需 100%，可以：
-1. 使用 Goldsky Subgraph 查询链上 OrderFilled 事件
-2. 直接扫描 Polygon 链上 CTF Exchange 合约
+Data API 的 offset 上限是硬限制。BUY+SELL 分拆策略可覆盖约 97%。**如需 100% 覆盖，使用链上实时监听模式**：
+
+```bash
+python main.py stream-trades --rpc-url wss://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
+```
+
+该模式直接从 Polygon 链上读取所有 `OrderFilled` 事件，不受 API 分页限制。
+
+### Q: stream-trades 需要什么准备？
+
+需要一个支持 WebSocket 的 Polygon RPC URL。推荐：
+- [Alchemy](https://www.alchemy.com/) — `wss://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY`
+- [Infura](https://infura.io/) — `wss://polygon-mainnet.infura.io/ws/v3/YOUR_KEY`
+- [QuickNode](https://www.quicknode.com/)
+- 公共 RPC: `wss://polygon-bor-rpc.publicnode.com` (有速率限制)
+
+### Q: 两种 trades 模式可以同时使用吗？
+
+可以。批量拉取 (`trades`) 和实时监听 (`stream-trades`) 的数据写入同一张 `trades` 表，通过 `transaction_hash` 自动去重（`INSERT OR IGNORE`）。推荐工作流：
+
+```bash
+# 先批量拉取历史数据
+python main.py trades --sport nba
+
+# 然后启动实时监听获取新交易
+python main.py stream-trades --sport nba --rpc-url wss://...
+```
+
+### Q: timestamp_ms 是真正的毫秒时间戳吗？
+
+不完全是。Polygon 区块时间戳精度为秒级。`timestamp_ms = block_timestamp × 1000 + log_index` 是一个**伪毫秒戳**，保证同一区块内不同交易的单调递增顺序。跨区块的精度仍为秒级。如需实际到达时间，参考 `server_received_ms`（服务器本地时间，毫秒精度）。
 
 ### Q: 已关闭的市场能获取 Order Book 吗？
 
@@ -525,11 +769,13 @@ python main.py trades --sport nba
 
 | 包名 | 版本 | 用途 |
 |------|------|------|
-| `requests` | ≥2.31.0 | HTTP 请求 |
-| `websocket-client` | ≥1.7.0 | WebSocket 连接 |
+| `requests` | ≥2.31.0 | HTTP 请求（REST API） |
+| `websocket-client` | ≥1.7.0 | WebSocket 连接（订单簿/比分流） |
+| `websockets` | ≥10.0 | 链上 RPC + 本地推送（asyncio） |
 | `tqdm` | ≥4.66.0 | 进度条 |
 
-无需 API Key，无需链上基础设施。
+- 批量拉取模式无需 API Key
+- 链上实时监听模式需要 Polygon WebSocket RPC URL
 
 ---
 

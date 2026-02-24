@@ -90,3 +90,5 @@ class Trade:
     price: float
     proxy_wallet: str
     transaction_hash: str
+    timestamp_ms: Optional[int] = None
+    server_received_ms: Optional[int] = None

@@ -131,6 +131,13 @@ def init_db():
         updated_at  TEXT
     );
     """)
+
+    for col, ctype in [("timestamp_ms", "INTEGER"), ("server_received_ms", "INTEGER")]:
+        try:
+            conn.execute(f"ALTER TABLE trades ADD COLUMN {col} {ctype}")
+        except sqlite3.OperationalError:
+            pass
+
     conn.commit()
 
 
@@ -303,13 +310,16 @@ def save_trades(rows: list[dict]) -> int:
             conn.execute(
                 "INSERT OR IGNORE INTO trades "
                 "(event_slug, condition_id, trade_timestamp, side, outcome, "
-                "size, price, proxy_wallet, transaction_hash, fetched_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "size, price, proxy_wallet, transaction_hash, fetched_at, "
+                "timestamp_ms, server_received_ms) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     r.get("event_slug", ""), r["condition_id"],
                     r["trade_timestamp"], r["side"], r.get("outcome", ""),
                     r["size"], r["price"], r.get("proxy_wallet", ""),
                     r.get("transaction_hash", ""), _now(),
+                    r.get("timestamp_ms"),
+                    r.get("server_received_ms"),
                 ),
             )
             inserted += 1

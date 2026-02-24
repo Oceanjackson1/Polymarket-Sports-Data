@@ -37,5 +37,12 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 DB_PATH = os.path.join(DATA_DIR, "polymarket_sports.db")
 SNAPSHOTS_DIR = os.path.join(DATA_DIR, "orderbook_snapshots")
 
+# ── Polygon 链上监听 ─────────────────────────────────────
+CTF_EXCHANGE = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e"
+NEG_RISK_CTF_EXCHANGE = "0xc5d563a36ae78145c45a50134d48a1215220f80a"
+ORDER_FILLED_TOPIC = "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6"
+CHAIN_WS_PORT = 8765
+CHAIN_BACKFILL_BLOCKS = 100
+
 # ── Polymarket 页面链接 ───────────────────────────────────
 POLYMARKET_EVENT_URL = "https://polymarket.com/event/{slug}"

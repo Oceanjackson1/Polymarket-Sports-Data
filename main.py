@@ -11,8 +11,13 @@ Polymarket 体育赛事预测市场 — 数据采集工具
     python main.py orderbook --sport nba       # 只获取 NBA 的订单簿
     python main.py orderbook --stream          # WebSocket 实时流模式
 
-    python main.py trades                      # 获取成交记录
+    python main.py trades                      # 获取成交记录（批量拉取）
     python main.py trades --sport nba          # 只获取 NBA 的成交
+
+    python main.py stream-trades --rpc-url wss://polygon-mainnet.g.alchemy.com/v2/KEY
+                                               # 实时监听链上成交
+    python main.py stream-trades --sport nba --rpc-url wss://...
+                                               # 只监听 NBA 的链上成交
 
     python main.py results                     # 提取比赛结果
     python main.py results --live              # WebSocket 实时比分
@@ -114,6 +119,18 @@ def cmd_trades(args):
         sport_filter=args.sport,
         resume=not args.no_resume,
     )
+
+
+def cmd_stream_trades(args):
+    from src.realized.chain_streamer import ChainTradeStreamer
+
+    streamer = ChainTradeStreamer(
+        rpc_url=args.rpc_url,
+        sport_filter=args.sport,
+        ws_port=args.ws_port,
+        backfill_blocks=args.backfill,
+    )
+    streamer.run()
 
 
 def cmd_results(args):
@@ -248,9 +265,17 @@ def main():
     p_ob.add_argument("--stream", action="store_true", help="WebSocket 实时流模式")
 
     # trades
-    p_tr = sub.add_parser("trades", help="获取成交记录")
+    p_tr = sub.add_parser("trades", help="获取成交记录（批量拉取）")
     p_tr.add_argument("--sport", type=str, default=None, help="运动类型过滤")
     p_tr.add_argument("--no-resume", action="store_true", help="不使用断点续传")
+
+    # stream-trades
+    p_st = sub.add_parser("stream-trades", help="实时监听链上成交（Polygon OrderFilled）")
+    p_st.add_argument("--rpc-url", type=str, required=True,
+                       help="Polygon WebSocket RPC URL (e.g. wss://polygon-mainnet.g.alchemy.com/v2/KEY)")
+    p_st.add_argument("--sport", type=str, default=None, help="运动类型过滤")
+    p_st.add_argument("--ws-port", type=int, default=8765, help="本地 WebSocket 推送端口 (默认 8765)")
+    p_st.add_argument("--backfill", type=int, default=100, help="启动时回补的区块数 (默认 100)")
 
     # results
     p_res = sub.add_parser("results", help="提取比赛结果")
@@ -284,6 +309,7 @@ def main():
         "discover": cmd_discover,
         "orderbook": cmd_orderbook,
         "trades": cmd_trades,
+        "stream-trades": cmd_stream_trades,
         "results": cmd_results,
         "export": cmd_export,
         "all": cmd_all,

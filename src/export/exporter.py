@@ -4,6 +4,7 @@ from __future__ import annotations
 import csv
 import json
 import os
+from datetime import datetime, timezone
 
 from config import DATA_DIR
 from src.database import get_connection, init_db
@@ -93,7 +94,20 @@ def export_trades_csv(output_path: str | None = None) -> str:
     if not rows:
         print("[Export] 无交易数据")
         return path
-    _write_csv(path, [dict(r) for r in rows])
+    dicts = []
+    for r in rows:
+        d = dict(r)
+        d.pop("server_received_ms", None)
+        ts_ms = d.get("timestamp_ms")
+        if ts_ms is not None:
+            ts_s = ts_ms // 1000
+            ms_frac = ts_ms % 1000
+            dt = datetime.fromtimestamp(ts_s, tz=timezone.utc)
+            d["trade_time_ms"] = f"{dt.strftime('%Y-%m-%d %H:%M:%S')}.{ms_frac:03d} UTC"
+        else:
+            d["trade_time_ms"] = ""
+        dicts.append(d)
+    _write_csv(path, dicts)
     print(f"[Export] 交易 → {path} ({len(rows)} 条)")
     return path
 
